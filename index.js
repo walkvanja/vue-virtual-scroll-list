@@ -35,8 +35,15 @@
     }
 
     return Vue2.component(namespace, {
+        data() {
+            return { 
+                columns: 1 // component default (was designed to work with 1 column only)
+              }
+        },
+
         props: {
             size: { type: Number, required: true },
+            cellWidth: { type: Number, required: false, default: 0 }, // DO NOT supported for 'variable'
             remain: { type: Number, required: true },
             rtag: { type: String, default: 'div' },
             wtag: { type: String, default: 'div' },
@@ -72,6 +79,9 @@
         watch: {
             size: function () {
                 this.alter = 'size'
+            },
+            cellWidth: function () {
+              this.alter = 'cellWidth'
             },
             remain: function () {
                 this.alter = 'remain'
@@ -117,11 +127,31 @@
                 }
             },
 
+            // for correct multi column reflow
+            onResize: function(e) {
+              this.updateColumns()
+            },
+
+            // calculate legacy size for multiple columns
+            getSize: function() {
+              return this.size / this.columns
+            },
+
+            // calculate actual columns number
+            updateColumns: function() {
+              this.columns = this.cellWidth ? Math.floor(this.$refs.vsl.offsetWidth / this.cellWidth) : 1
+            },
+
             // update render zone by scroll offset.
             updateZone: function (offset) {
                 var overs = this.variable
                     ? this.getVarOvers(offset)
-                    : Math.floor(offset / this.size)
+                    : Math.floor(offset / this.getSize())
+
+                //correct start index for multiple columns: (index % columns) MUST === 0
+                if (this.columns > 1) {
+                  overs = overs - overs % this.columns
+                }
 
                 var delta = this.delta
                 var zone = this.getZone(overs)
@@ -176,6 +206,7 @@
                 }
 
                 var offset = 0
+                //TODO: update size for multiple columns (if needed)
                 for (var i = 0; i < index; i++) {
                     var size = this.getVarSize(i, nocache)
                     delta.varCache[i] = {
@@ -191,6 +222,7 @@
                 return offset
             },
 
+            //TODO: update for multiple columns (if needed)
             // return a variable size (height) from given index.
             getVarSize: function (index, nocache) {
                 var cache = this.delta.varCache[index]
@@ -219,6 +251,7 @@
                 return this.getVarOffset(this.delta.start)
             },
 
+            //TODO: update for multiple columns (if needed)
             // return the variable paddingBottom base current zone.
             getVarPaddingBottom: function () {
                 var delta = this.delta
@@ -232,6 +265,7 @@
                 }
             },
 
+            //TODO: update for multiple columns (if needed)
             // retun the variable all heights use to judge reach bottom.
             getVarAllHeight: function () {
                 var delta = this.delta
@@ -264,6 +298,18 @@
                 } else {
                     start = index
                     end = start + delta.keeps - 1
+                }
+
+                //update 'end' part for correct rendering if multiple columns
+                if (this.columns > 1) {
+                  if(!isLast && delta.total - end < this.columns) {
+                    //in case of row start is OK but end is lack of some items  
+                    end = delta.total - 1
+                    isLast = true
+                  } else if (isLast && start % this.columns !== 0) {
+                    //in case when start rendering lask part row start is incorrect  
+                    start -= start % this.columns
+                  }
                 }
 
                 return {
@@ -308,14 +354,14 @@
                     paddingTop = hasPadding ? this.getVarPaddingTop() : 0
                     paddingBottom = hasPadding ? this.getVarPaddingBottom() : 0
                 } else {
-                    allHeight = this.size * delta.total
-                    paddingTop = this.size * (hasPadding ? delta.start : 0)
-                    paddingBottom = this.size * (hasPadding ? delta.total - delta.keeps : 0) - paddingTop
+                    allHeight = this.getSize() * delta.total
+                    paddingTop = this.getSize() * (hasPadding ? delta.start : 0)
+                    paddingBottom = this.getSize() * (hasPadding ? delta.total - delta.keeps : 0) - paddingTop
                 }
 
                 delta.paddingTop = paddingTop
                 delta.paddingBottom = paddingBottom
-                delta.offsetAll = allHeight - this.size * this.remain
+                delta.offsetAll = allHeight - this.getSize() * this.remain
 
                 var targets = []
                 for (var i = delta.start; i <= delta.end; i++) {
@@ -326,9 +372,14 @@
         },
 
         mounted: function () {
+            //needed to get actual columns count
+            window.addEventListener('resize', this.onResize)
+            //calculate columns count
+            this.updateColumns()
+
             if (this.start) {
                 var start = this.getZone(this.start).start
-                this.setScrollTop(this.variable ? this.getVarOffset(start) : start * this.size)
+                this.setScrollTop(this.variable ? this.getVarOffset(start) : start * this.getSize())
             } else if (this.offset) {
                 this.setScrollTop(this.offset)
             }
@@ -340,6 +391,10 @@
             delta.keeps = this.remain + (this.bench || this.remain)
 
             var calcstart = this.alter === 'start' ? this.start : delta.start
+            //Correct row start for multiple columns
+            if (this.columns > 1 && this.alter !== 'start') {
+              calcstart = calcstart - calcstart % this.columns
+            }
             var zone = this.getZone(calcstart)
 
             // if start, size or offset change, update scroll position.
@@ -348,7 +403,7 @@
                     ? this.offset : this.variable
                         ? this.getVarOffset(zone.isLast ? delta.total : zone.start)
                         : zone.isLast && (delta.total - calcstart <= this.remain)
-                            ? delta.total * this.size : calcstart * this.size)
+                            ? delta.total * this.getSize() : calcstart * this.getSize())
                 )
             }
 
@@ -361,6 +416,10 @@
             }
         },
 
+        beforeDestroy: function () {
+          window.removeEventListener('resize', this.onResize)
+        },
+
         render: function (h) {
             var list = this.filter()
             var delta = this.delta
@@ -371,7 +430,7 @@
                 'style': {
                     'display': 'block',
                     'overflow-y': 'auto',
-                    'height': this.size * this.remain + 'px'
+                    'height': this.getSize() * this.remain + 'px'
                 },
                 'on': {
                     '&scroll': dbc ? _debounce(this.onScroll.bind(this), dbc) : this.onScroll
